@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Manatal → Airtable Job Sync</title>
+  <style>
+    :root {
+      --color-bg: #f4f5fb;
+      --color-card-bg: #ffffff;
+      --color-primary: #3b82f6;
+      --color-primary-hover: #2563eb;
+      --color-border: #e5e7eb;
+      --color-text: #111827;
+      --color-text-muted: #6b7280;
+      --color-danger: #b91c1c;
+      --radius-card: 12px;
+      --radius-button: 999px;
+      --shadow-card: 0 18px 45px rgba(15, 23, 42, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top left, #e0e7ff, #f4f5fb);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--color-text);
+    }
+
+    .app-shell {
+      width: 100%;
+      max-width: 880px;
+      padding: 32px 16px;
+    }
+
+    .card {
+      background: var(--color-card-bg);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-card);
+      padding: 28px 28px 24px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+
+    .card-header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .title {
+      font-size: 1.25rem;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+    }
+
+    .badge {
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(37, 99, 235, 0.06);
+      color: var(--color-primary);
+      border: 1px solid rgba(37, 99, 235, 0.2);
+      white-space: nowrap;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: var(--color-text-muted);
+    }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .primary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border-radius: var(--radius-button);
+      border: none;
+      background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
+      color: white;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 10px 25px rgba(37, 99, 235, 0.38);
+      transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.1s ease;
+    }
+
+    .primary-button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 28px rgba(37, 99, 235, 0.35);
+    }
+
+    .primary-button:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 8px 18px rgba(37, 99, 235, 0.4);
+    }
+
+    .primary-button:disabled {
+      opacity: 0.6;
+      cursor: default;
+      box-shadow: none;
+    }
+
+    .button-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #ffffff;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .status {
+      font-size: 0.85rem;
+      color: var(--color-text-muted);
+      min-height: 1.2em;
+    }
+
+    .status--success {
+      color: #15803d;
+    }
+
+    .status--error {
+      color: var(--color-danger);
+    }
+
+    .divider {
+      height: 1px;
+      background: linear-gradient(to right, rgba(148, 163, 184, 0.45), transparent);
+      margin: 16px 0 14px;
+    }
+
+    .table-wrapper {
+      max-height: 320px;
+      overflow: auto;
+      border-radius: 10px;
+      border: 1px solid var(--color-border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    thead {
+      background: linear-gradient(to right, #eff6ff, #eef2ff);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    th,
+    td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    th {
+      font-weight: 600;
+      font-size: 0.8rem;
+      color: #4b5563;
+      position: sticky;
+      top: 0;
+      background: inherit;
+    }
+
+    tbody tr:nth-child(even) {
+      background-color: #f9fafb;
+    }
+
+    tbody tr:hover {
+      background-color: #eef2ff;
+    }
+
+    .text-mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+        "Courier New", monospace;
+      font-size: 0.8rem;
+    }
+
+    .table-caption {
+      font-size: 0.8rem;
+      color: var(--color-text-muted);
+      margin-top: 8px;
+    }
+
+    .footer-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .open-airtable-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius-button);
+      border: 1px solid rgba(37, 99, 235, 0.35);
+      background: rgba(239, 246, 255, 0.85);
+      color: var(--color-primary);
+      font-size: 0.82rem;
+      font-weight: 550;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.08s ease, transform 0.08s ease, box-shadow 0.08s ease;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.07);
+    }
+
+    .open-airtable-button:hover {
+      background: #e0edff;
+      transform: translateY(-1px);
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+    }
+
+    .open-airtable-button:active {
+      transform: translateY(0);
+      box-shadow: 0 5px 10px rgba(15, 23, 42, 0.15);
+    }
+
+    .footer-text {
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+      text-align: right;
+    }
+
+    @media (max-width: 640px) {
+      .card {
+        padding: 20px 16px;
+      }
+
+      .title-row {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .controls-row {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .footer-row {
+        flex-direction: column-reverse;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <div class="card">
+      <div class="card-header">
+        <div class="title-row">
+          <div class="title">Manatal → Airtable Job Sync</div>
+          <div class="badge">Last 3 months</div>
+        </div>
+        <div class="subtitle">
+          Fetch published jobs from Manatal for the past three months, sync them into Airtable, and see which
+          descriptions changed.
+        </div>
+      </div>
+
+      <div class="controls-row">
+        <button id="updateButton" class="primary-button" type="button">
+          <span class="button-label">
+            <span id="buttonSpinner" class="spinner" style="display: none;"></span>
+            <span id="buttonText">Update jobs</span>
+          </span>
+        </button>
+        <div id="status" class="status"></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div id="resultsSection" style="display: none;">
+        <div id="resultsHeader" class="status status--success" style="margin-bottom: 8px;"></div>
+        <div id="tableContainer"></div>
+      </div>
+
+      <div id="noResults" class="status" style="display: none; margin-top: 4px;">
+        No jobs updated.
+      </div>
+
+      <div id="errorBanner" class="status status--error" style="display: none; margin-top: 4px;"></div>
+
+      <div class="footer-row">
+        <a id="airtableButton" class="open-airtable-button" href="#" target="_blank" rel="noopener noreferrer"
+          style="display: none;">
+          <span>Open in Airtable</span>
+        </a>
+        <div class="footer-text">
+          Each run compares JD word counts between Manatal and Airtable and only writes changes when they differ.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const updateButton = document.getElementById('updateButton');
+    const statusEl = document.getElementById('status');
+    const buttonText = document.getElementById('buttonText');
+    const buttonSpinner = document.getElementById('buttonSpinner');
+    const resultsSection = document.getElementById('resultsSection');
+    const resultsHeader = document.getElementById('resultsHeader');
+    const tableContainer = document.getElementById('tableContainer');
+    const noResults = document.getElementById('noResults');
+    const errorBanner = document.getElementById('errorBanner');
+    const airtableButton = document.getElementById('airtableButton');
+
+    function setLoading(isLoading) {
+      if (isLoading) {
+        updateButton.disabled = true;
+        buttonText.textContent = 'Updating jobs...';
+        buttonSpinner.style.display = 'inline-block';
+        statusEl.textContent = 'Running sync, please wait...';
+      } else {
+        updateButton.disabled = false;
+        buttonText.textContent = 'Update jobs';
+        buttonSpinner.style.display = 'none';
+      }
+    }
+
+    function clearMessages() {
+      errorBanner.style.display = 'none';
+      errorBanner.textContent = '';
+      resultsSection.style.display = 'none';
+      resultsHeader.textContent = '';
+      tableContainer.innerHTML = '';
+      noResults.style.display = 'none';
+      airtableButton.style.display = 'none';
+    }
+
+    function renderTable(updatedJobs) {
+      if (!updatedJobs || updatedJobs.length === 0) {
+        tableContainer.innerHTML = '';
+        return;
+      }
+
+      const rows = updatedJobs.map(job => {
+        const jobId = job.job_id ?? '';
+        const jobName = job.job_name ?? '';
+        const clientName = job.client_name ?? '';
+        const oldCnt = job.old_jd_word_cnt ?? 0;
+        const newCnt = job.new_jd_word_cnt ?? 0;
+
+        return `
+          <tr>
+            <td class="text-mono">${jobId}</td>
+            <td>${jobName}</td>
+            <td>${clientName}</td>
+            <td class="text-mono">${oldCnt}</td>
+            <td class="text-mono">${newCnt}</td>
+          </tr>
+        `;
+      }).join('');
+
+      tableContainer.innerHTML = `
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Job ID</th>
+                <th>Job name</th>
+                <th>Client</th>
+                <th>Old JD words</th>
+                <th>New JD words</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+        <div class="table-caption">
+          Only jobs where the JD word count changed are listed here.
+        </div>
+      `;
+    }
+
+    async function handleUpdateJobs() {
+      clearMessages();
+      setLoading(true);
+
+      try {
+        const response = await fetch('/update-jobs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          let errorText = 'Unknown error';
+          try {
+            const data = await response.json();
+            errorText = data.detail || JSON.stringify(data);
+          } catch (_) {
+            errorText = await response.text();
+          }
+          throw new Error(errorText);
+        }
+
+        const data = await response.json();
+        const count = data.updatedCount ?? 0;
+        const updatedJobs = data.updatedJobs ?? [];
+        const airtableUrl = data.airtableUrl;
+
+        statusEl.textContent = count > 0
+          ? `Sync complete. ${count} job(s) updated.`
+          : 'Sync complete. No jobs updated.';
+
+        if (count > 0) {
+          resultsSection.style.display = 'block';
+          resultsHeader.textContent = `${count} job(s) updated`;
+          renderTable(updatedJobs);
+        } else {
+          noResults.style.display = 'block';
+        }
+
+        if (airtableUrl) {
+          airtableButton.href = airtableUrl;
+          airtableButton.style.display = 'inline-flex';
+        }
+      } catch (err) {
+        console.error(err);
+        errorBanner.textContent = `Failed to update jobs: ${err.message || err}`;
+        errorBanner.style.display = 'block';
+        statusEl.textContent = '';
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    updateButton.addEventListener('click', () => {
+      handleUpdateJobs();
+    });
+  </script>
+</body>
+</html>
+
