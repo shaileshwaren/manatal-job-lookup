@@ -28,13 +28,14 @@ published date   raw["open_at"] or raw["created_at"] for filtering
 """
 import asyncio
 import html
+import json
 import os
 import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from dotenv import load_dotenv
@@ -60,6 +61,54 @@ def compute_cutoff_date() -> datetime:
 
 def compute_jd_word_count(jd: str) -> int:
     return len(jd.split())
+
+
+def _load_manatal_jobs_config() -> Dict[str, Any]:
+    """
+    Load jobs API query config from manatal_jobs_config.json, with sane defaults.
+
+    File shape (all keys optional):
+    {
+      "params": {
+        "status": "active",
+        "is_published": "true",
+        "city": "",
+        "state": "",
+        "is_remote": null,
+        ...
+      },
+      "page_size": 100
+    }
+
+    - Any param with value null/"" is skipped.
+    - We always add open_at__gte (based on cutoff) and page/page_size in code.
+    """
+    global _MANATAL_JOBS_CONFIG_CACHE
+    if _MANATAL_JOBS_CONFIG_CACHE is not None:
+        return _MANATAL_JOBS_CONFIG_CACHE
+
+    cfg: Dict[str, Any] = {
+        "params": {
+            "status": "active",
+            "is_published": "true",
+        },
+        "page_size": 100,
+    }
+    if MANATAL_JOBS_CONFIG_FILE.exists():
+        try:
+            raw = json.loads(MANATAL_JOBS_CONFIG_FILE.read_text())
+            if isinstance(raw, dict):
+                user_params = raw.get("params")
+                if isinstance(user_params, dict):
+                    cfg["params"].update(user_params)
+                for k, v in raw.items():
+                    if k != "params":
+                        cfg[k] = v
+        except Exception:
+            # On any error, fall back to defaults
+            pass
+    _MANATAL_JOBS_CONFIG_CACHE = cfg
+    return cfg
 
 
 def _jd_to_plain_text(html_content: str) -> str:
@@ -212,6 +261,9 @@ MAX_429_RETRIES = 3
 PAGE_DELAY_SEC = 1.5   # ~40 requests/min, under 100/min limit
 MIN_SYNC_INTERVAL_SEC = 60  # refuse to run if last sync was less than this ago
 LAST_RUN_FILE = Path(__file__).resolve().parent / ".last_sync_time"
+MANATAL_JOBS_CONFIG_FILE = Path(__file__).resolve().parent / "manatal_jobs_config.json"
+
+_MANATAL_JOBS_CONFIG_CACHE: Optional[Dict[str, Any]] = None
 
 
 def _guard_recent_run() -> None:
@@ -229,6 +281,11 @@ def _guard_recent_run() -> None:
     LAST_RUN_FILE.write_text(str(time.time()))
 
 
+MANATAL_ORG_PAGE_SIZE = 100
+MAX_ORG_PAGES = 500
+ORG_CONCURRENCY = 3  # max parallel org detail requests
+
+
 async def fetch_organizations() -> Dict[str, str]:
     """Fetch all organizations from Manatal; return map org_id -> name for filling client_name."""
     _require_env("MANATAL_API_TOKEN", MANATAL_API_TOKEN)
@@ -238,11 +295,11 @@ async def fetch_organizations() -> Dict[str, str]:
         "Accept": "application/json",
     }
     result: Dict[str, str] = {}
-    params: Dict[str, Any] = {}
+    params: Dict[str, Any] = {"page_size": MANATAL_ORG_PAGE_SIZE}
     page = 0
-    max_pages = 50
     async with httpx.AsyncClient(timeout=30.0) as client:
-        while page < max_pages:
+        while page < MAX_ORG_PAGES:
+            page += 1
             resp = await client.get(url, headers=headers, params=params)
             if resp.status_code != 200:
                 break
@@ -257,33 +314,81 @@ async def fetch_organizations() -> Dict[str, str]:
             if not next_url:
                 break
             url = next_url
-            params = {}
-            page += 1
+            params = {"page_size": MANATAL_ORG_PAGE_SIZE}
             await asyncio.sleep(PAGE_DELAY_SEC)
     return result
 
 
-# Documented Manatal jobs API query params: status, open_at__gte, page_size, page
+async def fetch_organizations_for_ids(org_ids: Set[str]) -> Dict[str, str]:
+    """Fetch only the organizations whose IDs we saw on jobs."""
+    if not org_ids:
+        return {}
+    _require_env("MANATAL_API_TOKEN", MANATAL_API_TOKEN)
+    base_url = "https://api.manatal.com/open/v3/organizations/"
+    headers = {
+        "Authorization": f"Token {MANATAL_API_TOKEN}",
+        "Accept": "application/json",
+    }
+    result: Dict[str, str] = {}
+    sem = asyncio.Semaphore(ORG_CONCURRENCY)
+
+    async def _fetch_one(oid: str, client: httpx.AsyncClient) -> None:
+        async with sem:
+            params = {"id": oid}
+            resp = await client.get(base_url, headers=headers, params=params)
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            records = data.get("results") if isinstance(data, dict) else data
+            if isinstance(records, dict):
+                recs_list = [records]
+            elif isinstance(records, list):
+                recs_list = records
+            else:
+                return
+            for rec in recs_list:
+                if not isinstance(rec, dict):
+                    continue
+                rid = rec.get("id")
+                name = rec.get("name") or ""
+                if rid is not None:
+                    result[str(rid)] = name.strip()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        tasks = [_fetch_one(oid, client) for oid in sorted(org_ids)]
+        await asyncio.gather(*tasks)
+    return result
+
+# Documented Manatal jobs API query params: status, is_published, open_at__gte, page_size, page
 MANATAL_PAGE_SIZE = 100
 
 
 def _manatal_filter_params(cutoff: datetime, page_num: int = 1) -> Dict[str, Any]:
     """
     Query params for GET /open/v3/jobs/ so the API filters server-side.
-    Current Manatal query: GET https://api.manatal.com/open/v3/jobs/
-      ?status=active
-      &open_at__gte=YYYY-MM-DD   (cutoff = 90 days ago UTC)
-      &page_size=100
-      &page=N
-    Pagination: we request page 1, then use the "next" URL to get the next page number and
-    keep using the same base URL + these params (so filtering is applied on every request).
+    Base behavior (overridable via manatal_jobs_config.json):
+      - Load static filters from config["params"] (skipping null/"").
+      - Always add open_at__gte=YYYY-MM-DD based on cutoff (last 90 days by default).
+      - Use page_size from config or default 100.
+      - Set page=N based on pagination.
+
+    To change filters, edit manatal_jobs_config.json instead of code.
     """
-    return {
-        "status": "active",
-        "open_at__gte": cutoff.strftime("%Y-%m-%d"),
-        "page_size": MANATAL_PAGE_SIZE,
-        "page": page_num,
-    }
+    cfg = _load_manatal_jobs_config()
+    base_params = cfg.get("params") or {}
+    params: Dict[str, Any] = {}
+    if isinstance(base_params, dict):
+        for k, v in base_params.items():
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            params[k] = v
+    params["open_at__gte"] = cutoff.strftime("%Y-%m-%d")
+    page_size = cfg.get("page_size") or MANATAL_PAGE_SIZE
+    params["page_size"] = int(page_size)
+    params["page"] = page_num
+    return params
 
 
 def _parse_next_page(next_url: Optional[str]) -> Optional[int]:
@@ -501,6 +606,36 @@ async def create_airtable_record(job: Dict[str, Any]) -> None:
             )
 
 
+async def create_airtable_records_batch(jobs: List[Dict[str, Any]]) -> None:
+    """Create up to 10 Airtable records in a single request."""
+    if not jobs:
+        return
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    records = []
+    for job in jobs:
+        records.append({
+            "fields": {
+                "job_id": str(job["job_id"] or ""),
+                "job_name": job["job_name"],
+                "jd": job["jd"],
+                "client_id": str(job["client_id"] or ""),
+                "client_name": job["client_name"],
+                "word_cnt": job["jd_word_cnt"],
+            }
+        })
+    payload = {"records": records}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"Airtable batch create error: {resp.status_code} {resp.text}"
+            )
+
+
 async def update_airtable_record(record_id: str, job: Dict[str, Any]) -> None:
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}/{record_id}"
     headers = {
@@ -522,20 +657,62 @@ async def update_airtable_record(record_id: str, job: Dict[str, Any]) -> None:
             )
 
 
+async def update_airtable_records_batch(records: List[Dict[str, Any]]) -> None:
+    """
+    Batch update up to 10 Airtable records. Each item in records must have:
+      - record_id
+      - job (normalized Manatal job dict)
+    """
+    if not records:
+        return
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload_records = []
+    for item in records:
+        record_id = item["record_id"]
+        job = item["job"]
+        payload_records.append({
+            "id": record_id,
+            "fields": {
+                "job_name": job["job_name"],
+                "jd": job["jd"],
+                "word_cnt": job["jd_word_cnt"],
+            },
+        })
+    payload = {"records": payload_records}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.patch(url, headers=headers, json=payload)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"Airtable batch update error: {resp.status_code} {resp.text}"
+            )
+
+
 async def run_sync_async() -> Dict[str, Any]:
     """Fetch Manatal jobs (last 3 months), sync to Airtable; return updatedCount, updatedJobs, airtableUrl."""
     cutoff = compute_cutoff_date()
-    print("Deduplicating Airtable (remove duplicate job_id rows)...", flush=True)
-    deleted = await dedupe_airtable_by_job_id()
-    if deleted:
-        print(f"  Removed {deleted} duplicate(s).", flush=True)
-    else:
-        print("  No duplicates found.", flush=True)
-    print("Fetching organizations from Manatal...", flush=True)
-    org_map = await fetch_organizations()
-    print(f"  Loaded {len(org_map)} organizations.", flush=True)
     print("Fetching jobs from Manatal...", flush=True)
     manatal_jobs = await fetch_recent_jobs_from_manatal(cutoff)
+    # Build set of organization IDs we actually need names for
+    org_ids: Set[str] = set()
+    for job in manatal_jobs:
+        cid = str(job.get("client_id") or "").strip()
+        if cid:
+            org_ids.add(cid)
+    print(f"Fetching organizations from Manatal for {len(org_ids)} organization(s)...", flush=True)
+    org_map = await fetch_organizations_for_ids(org_ids)
+    # If the id-filtered fetch didn't return names (API may not support ?id=),
+    # fall back to paging through organizations and fill what we can.
+    if org_ids and len(org_map) < len(org_ids):
+        print("  Fallback: paging through organizations to resolve missing names...", flush=True)
+        all_orgs = await fetch_organizations()
+        for oid in org_ids:
+            if oid in all_orgs and oid not in org_map:
+                org_map[oid] = all_orgs[oid]
+    print(f"  Loaded {len(org_map)} organizations.", flush=True)
     for job in manatal_jobs:
         job["client_name"] = org_map.get(str(job["client_id"]), "") or job.get("client_name") or ""
     print("Fetching existing records from Airtable...", flush=True)
@@ -543,6 +720,22 @@ async def run_sync_async() -> Dict[str, Any]:
     updated_jobs: List[Dict[str, Any]] = []
     total = len(manatal_jobs)
     print(f"Syncing {total} jobs to Airtable...", flush=True)
+
+    # Collect creates and updates, then send to Airtable in small batches
+    creates_batch: List[Dict[str, Any]] = []
+    updates_batch: List[Dict[str, Any]] = []
+
+    async def _flush_creates() -> None:
+        nonlocal creates_batch
+        if creates_batch:
+            await create_airtable_records_batch(creates_batch)
+            creates_batch = []
+
+    async def _flush_updates() -> None:
+        nonlocal updates_batch
+        if updates_batch:
+            await update_airtable_records_batch(updates_batch)
+            updates_batch = []
 
     for i, job in enumerate(manatal_jobs, 1):
         job_id_key = str(job["job_id"] or "").strip()
@@ -552,7 +745,9 @@ async def run_sync_async() -> Dict[str, Any]:
             print(f"  Progress {i}/{total}...", flush=True)
         existing = airtable_records.get(job_id_key)
         if not existing:
-            await create_airtable_record(job)
+            creates_batch.append(job)
+            if len(creates_batch) >= 10:
+                await _flush_creates()
             continue
         existing_fields = existing.get("fields", {})
         try:
@@ -561,7 +756,7 @@ async def run_sync_async() -> Dict[str, Any]:
             existing_word_cnt = 0
         if existing_word_cnt != job["jd_word_cnt"]:
             record_id = existing["record_id"]
-            await update_airtable_record(record_id, job)
+            updates_batch.append({"record_id": record_id, "job": job})
             updated_jobs.append({
                 "job_id": job_id_key,
                 "job_name": job["job_name"],
@@ -569,6 +764,12 @@ async def run_sync_async() -> Dict[str, Any]:
                 "old_jd_word_cnt": existing_word_cnt,
                 "new_jd_word_cnt": job["jd_word_cnt"],
             })
+            if len(updates_batch) >= 10:
+                await _flush_updates()
+
+    # Flush any remaining batched writes
+    await _flush_creates()
+    await _flush_updates()
 
     airtable_url = f"https://airtable.com/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
     return {

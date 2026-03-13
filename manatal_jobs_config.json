@@ -1,0 +1,8 @@
+{
+  "params": {
+    "status": "active",
+    "is_published": "true"
+  },
+  "page_size": 100
+}
+
