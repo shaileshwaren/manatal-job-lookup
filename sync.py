@@ -754,16 +754,21 @@ async def run_sync_async() -> Dict[str, Any]:
             existing_word_cnt = int(existing_fields.get("word_cnt") or 0)
         except (TypeError, ValueError):
             existing_word_cnt = 0
-        if existing_word_cnt != job["jd_word_cnt"]:
+        needs_jd_update = existing_word_cnt != job["jd_word_cnt"]
+        existing_client_name = (existing_fields.get("client_name") or "").strip()
+        desired_client_name = (job.get("client_name") or "").strip()
+        needs_client_name_update = bool(desired_client_name) and (existing_client_name != desired_client_name)
+        if needs_jd_update or needs_client_name_update:
             record_id = existing["record_id"]
             updates_batch.append({"record_id": record_id, "job": job})
-            updated_jobs.append({
-                "job_id": job_id_key,
-                "job_name": job["job_name"],
-                "client_name": job["client_name"],
-                "old_jd_word_cnt": existing_word_cnt,
-                "new_jd_word_cnt": job["jd_word_cnt"],
-            })
+            if needs_jd_update:
+                updated_jobs.append({
+                    "job_id": job_id_key,
+                    "job_name": job["job_name"],
+                    "client_name": job["client_name"],
+                    "old_jd_word_cnt": existing_word_cnt,
+                    "new_jd_word_cnt": job["jd_word_cnt"],
+                })
             if len(updates_batch) >= 10:
                 await _flush_updates()
 
