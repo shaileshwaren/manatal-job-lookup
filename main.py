@@ -1,3 +1,17 @@
+"""
+Manatal → Airtable Job Sync
+
+FIELD MAPPING (Manatal API → internal → Airtable table)
+──────────────────────────────────────────────────────
+Airtable field   Internal name   Manatal source (first match wins)
+──────────────   ─────────────   ─────────────────────────────────
+job_id           job_id          raw["id"] or raw["uuid"]
+job_name         job_name        raw["position_name"] or raw["job_title"] or raw["title"]
+jd               jd              raw["description"] or raw["job_description"] or raw["details"]
+client_id        client_id       raw["client"]["id"] or raw["client"]["uuid"] (or raw["company"])
+client_name      client_name     raw["client"]["name"] or raw["client"]["company_name"]
+jd_word_cnt      jd_word_cnt     computed: len(jd.split())  (not from Manatal)
+"""
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
