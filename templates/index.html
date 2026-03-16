@@ -78,6 +78,18 @@
       white-space: nowrap;
     }
 
+    .badge--new {
+      background: rgba(21, 128, 61, 0.1);
+      color: #15803d;
+      border-color: rgba(21, 128, 61, 0.3);
+    }
+
+    .badge--updated {
+      background: rgba(180, 83, 9, 0.1);
+      color: #b45309;
+      border-color: rgba(180, 83, 9, 0.3);
+    }
+
     .subtitle {
       font-size: 0.9rem;
       color: var(--color-text-muted);
@@ -317,7 +329,7 @@
       </div>
 
       <div id="noResults" class="status" style="display: none; margin-top: 4px;">
-        No jobs updated.
+        No jobs new or updated.
       </div>
 
       <div id="errorBanner" class="status status--error" style="display: none; margin-top: 4px;"></div>
@@ -369,21 +381,42 @@
       airtableButton.style.display = 'none';
     }
 
-    function renderTable(updatedJobs) {
-      if (!updatedJobs || updatedJobs.length === 0) {
+    function renderTable(createdJobs, updatedJobs) {
+      const created = createdJobs ?? [];
+      const updated = updatedJobs ?? [];
+      const hasNew = created.length > 0;
+      const hasUpdated = updated.length > 0;
+      if (!hasNew && !hasUpdated) {
         tableContainer.innerHTML = '';
         return;
       }
 
-      const rows = updatedJobs.map(job => {
+      const newRows = created.map(job => {
+        const jobId = job.job_id ?? '';
+        const jobName = job.job_name ?? '';
+        const clientName = job.client_name ?? '';
+        const wordCnt = job.word_cnt ?? 0;
+        return `
+          <tr>
+            <td><span class="badge badge--new">New</span></td>
+            <td class="text-mono">${jobId}</td>
+            <td>${jobName}</td>
+            <td>${clientName}</td>
+            <td class="text-mono">—</td>
+            <td class="text-mono">${wordCnt}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const updatedRows = updated.map(job => {
         const jobId = job.job_id ?? '';
         const jobName = job.job_name ?? '';
         const clientName = job.client_name ?? '';
         const oldCnt = job.old_jd_word_cnt ?? 0;
         const newCnt = job.new_jd_word_cnt ?? 0;
-
         return `
           <tr>
+            <td><span class="badge badge--updated">Updated</span></td>
             <td class="text-mono">${jobId}</td>
             <td>${jobName}</td>
             <td>${clientName}</td>
@@ -398,20 +431,22 @@
           <table>
             <thead>
               <tr>
+                <th>Type</th>
                 <th>Job ID</th>
                 <th>Job name</th>
                 <th>Client</th>
-                <th>Old JD words</th>
-                <th>New JD words</th>
+                <th>Old words</th>
+                <th>New words</th>
               </tr>
             </thead>
             <tbody>
-              ${rows}
+              ${newRows}
+              ${updatedRows}
             </tbody>
           </table>
         </div>
         <div class="table-caption">
-          Only jobs where the JD word count changed are listed here.
+          Jobs added to the table (New) and existing rows where JD or client name changed (Updated).
         </div>
       `;
     }
@@ -440,18 +475,29 @@
         }
 
         const data = await response.json();
-        const count = data.updatedCount ?? 0;
+        const createdCount = data.createdCount ?? 0;
+        const updatedCount = data.updatedCount ?? 0;
+        const createdJobs = data.createdJobs ?? [];
         const updatedJobs = data.updatedJobs ?? [];
         const airtableUrl = data.airtableUrl;
+        const totalChanged = createdCount + updatedCount;
 
-        statusEl.textContent = count > 0
-          ? `Sync complete. ${count} job(s) updated.`
-          : 'Sync complete. No jobs updated.';
+        if (totalChanged > 0) {
+          const parts = [];
+          if (createdCount) parts.push(`${createdCount} new`);
+          if (updatedCount) parts.push(`${updatedCount} updated`);
+          statusEl.textContent = `Sync complete. ${parts.join(', ')}.`;
+        } else {
+          statusEl.textContent = 'Sync complete. No jobs new or updated.';
+        }
 
-        if (count > 0) {
+        if (totalChanged > 0) {
           resultsSection.style.display = 'block';
-          resultsHeader.textContent = `${count} job(s) updated`;
-          renderTable(updatedJobs);
+          const parts = [];
+          if (createdCount) parts.push(`${createdCount} new`);
+          if (updatedCount) parts.push(`${updatedCount} updated`);
+          resultsHeader.textContent = parts.join(', ');
+          renderTable(createdJobs, updatedJobs);
         } else {
           noResults.style.display = 'block';
         }

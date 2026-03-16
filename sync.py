@@ -717,6 +717,7 @@ async def run_sync_async() -> Dict[str, Any]:
         job["client_name"] = org_map.get(str(job["client_id"]), "") or job.get("client_name") or ""
     print("Fetching existing records from Airtable...", flush=True)
     airtable_records = await fetch_all_airtable_records()
+    created_jobs: List[Dict[str, Any]] = []
     updated_jobs: List[Dict[str, Any]] = []
     total = len(manatal_jobs)
     print(f"Syncing {total} jobs to Airtable...", flush=True)
@@ -746,6 +747,12 @@ async def run_sync_async() -> Dict[str, Any]:
         existing = airtable_records.get(job_id_key)
         if not existing:
             creates_batch.append(job)
+            created_jobs.append({
+                "job_id": job_id_key,
+                "job_name": job["job_name"],
+                "client_name": job["client_name"],
+                "word_cnt": job["jd_word_cnt"],
+            })
             if len(creates_batch) >= 10:
                 await _flush_creates()
             continue
@@ -761,14 +768,13 @@ async def run_sync_async() -> Dict[str, Any]:
         if needs_jd_update or needs_client_name_update:
             record_id = existing["record_id"]
             updates_batch.append({"record_id": record_id, "job": job})
-            if needs_jd_update:
-                updated_jobs.append({
-                    "job_id": job_id_key,
-                    "job_name": job["job_name"],
-                    "client_name": job["client_name"],
-                    "old_jd_word_cnt": existing_word_cnt,
-                    "new_jd_word_cnt": job["jd_word_cnt"],
-                })
+            updated_jobs.append({
+                "job_id": job_id_key,
+                "job_name": job["job_name"],
+                "client_name": job["client_name"],
+                "old_jd_word_cnt": existing_word_cnt,
+                "new_jd_word_cnt": job["jd_word_cnt"],
+            })
             if len(updates_batch) >= 10:
                 await _flush_updates()
 
@@ -778,6 +784,8 @@ async def run_sync_async() -> Dict[str, Any]:
 
     airtable_url = f"https://airtable.com/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
     return {
+        "createdCount": len(created_jobs),
+        "createdJobs": created_jobs,
         "updatedCount": len(updated_jobs),
         "updatedJobs": updated_jobs,
         "airtableUrl": airtable_url,
@@ -804,14 +812,16 @@ if __name__ == "__main__":
     try:
         _guard_recent_run()
         result = run_sync()
-        n = result["updatedCount"]
-        print(f"Done. Updated {n} job(s).")
-        if n > 0:
-            for j in result["updatedJobs"]:
-                print(
-                    f"  - {j['job_id']} | {j['job_name']} | {j['client_name']} | "
-                    f"{j['old_jd_word_cnt']} -> {j['new_jd_word_cnt']} words"
-                )
+        nc = result.get("createdCount", 0)
+        nu = result.get("updatedCount", 0)
+        print(f"Done. {nc} new, {nu} updated.")
+        for j in result.get("createdJobs") or []:
+            print(f"  [NEW]   {j['job_id']} | {j['job_name']} | {j['client_name']} | {j['word_cnt']} words")
+        for j in result.get("updatedJobs") or []:
+            print(
+                f"  [UPD]   {j['job_id']} | {j['job_name']} | {j['client_name']} | "
+                f"{j['old_jd_word_cnt']} -> {j['new_jd_word_cnt']} words"
+            )
         print("Airtable:", result["airtableUrl"])
     except Exception as e:
         print("Error:", e, file=sys.stderr)
