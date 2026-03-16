@@ -588,12 +588,21 @@ async def create_airtable_record(job: Dict[str, Any]) -> None:
         "Authorization": f"Bearer {AIRTABLE_TOKEN}",
         "Content-Type": "application/json",
     }
+    # Airtable fields job_id/client_id are numeric; send numbers or null, not empty strings
+    try:
+        job_id_val: Optional[int] = int(job["job_id"]) if job.get("job_id") not in (None, "") else None
+    except (TypeError, ValueError):
+        job_id_val = None
+    try:
+        client_id_val: Optional[int] = int(job["client_id"]) if job.get("client_id") not in (None, "") else None
+    except (TypeError, ValueError):
+        client_id_val = None
     payload = {
         "fields": {
-            "job_id": str(job["job_id"] or ""),
+            "job_id": job_id_val,
             "job_name": job["job_name"],
             "jd": job["jd"],
-            "client_id": str(job["client_id"] or ""),
+            "client_id": client_id_val,
             "client_name": job["client_name"],
             "word_cnt": job["jd_word_cnt"],
         }
@@ -617,12 +626,20 @@ async def create_airtable_records_batch(jobs: List[Dict[str, Any]]) -> None:
     }
     records = []
     for job in jobs:
+        try:
+            job_id_val: Optional[int] = int(job["job_id"]) if job.get("job_id") not in (None, "") else None
+        except (TypeError, ValueError):
+            job_id_val = None
+        try:
+            client_id_val: Optional[int] = int(job["client_id"]) if job.get("client_id") not in (None, "") else None
+        except (TypeError, ValueError):
+            client_id_val = None
         records.append({
             "fields": {
-                "job_id": str(job["job_id"] or ""),
+                "job_id": job_id_val,
                 "job_name": job["job_name"],
                 "jd": job["jd"],
-                "client_id": str(job["client_id"] or ""),
+                "client_id": client_id_val,
                 "client_name": job["client_name"],
                 "word_cnt": job["jd_word_cnt"],
             }
