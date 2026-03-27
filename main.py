@@ -33,7 +33,8 @@ LAST_SYNC_STATUS = {
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("index.html", {"request": request})
+    # Starlette's newer signature expects request first.
+    return templates.TemplateResponse(request=request, name="index.html")
 
 
 @app.get("/api/refresh-status")
